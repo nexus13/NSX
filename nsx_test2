@@ -1,0 +1,80 @@
+import pandas as pd
+from vmware.vapi.vsphere.client import create_vsphere_client
+from vmware.nsx.policy.infra.domains.security_policies.rules_client import Rule
+from com.vmware.nsx.policy_client import Policy
+import requests
+from requests.packages.urllib3.exceptions import InsecureRequestWarning
+
+# Disable insecure warnings (for self-signed SSL certificates)
+requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+
+def nsx_authenticate(nsx_manager, username, password):
+    """
+    Authenticates to NSX Manager and returns an NSX policy client.
+    """
+    session = requests.session()
+    session.verify = False  # Disable SSL verification if using self-signed certificates
+    client = Policy(username=username, password=password, session=session, url=f"https://{nsx_manager}")
+    return client
+
+def get_dfw_rules(nsx_policy_client, domain_id="default"):
+    """
+    Retrieves DFW rules from NSX Manager for the specified domain.
+    
+    Parameters:
+        nsx_policy_client: Authenticated NSX policy client.
+        domain_id (str): Domain ID to retrieve the rules from (default is 'default').
+        
+    Returns:
+        List of rule dictionaries.
+    """
+    rule_service = nsx_policy_client.Infra.Domains.SecurityPolicies.Rules
+    rules = rule_service.list(domain_id=domain_id).results
+    return rules
+
+def generate_dfw_report_from_nsx(nsx_manager, username, password, domain_id="default", output_file="DFW_Rules_Report.xlsx"):
+    """
+    Connects to NSX Manager, fetches DFW rules, and generates an Excel report.
+    
+    Parameters:
+        nsx_manager (str): NSX Manager IP or hostname.
+        username (str): Username for NSX Manager.
+        password (str): Password for NSX Manager.
+        domain_id (str): Domain ID (default: 'default').
+        output_file (str): Output Excel file path (default: 'DFW_Rules_Report.xlsx').
+    """
+    
+    # Authenticate and get NSX policy client
+    nsx_client = nsx_authenticate(nsx_manager, username, password)
+    
+    # Retrieve DFW rules
+    rules = get_dfw_rules(nsx_client, domain_id=domain_id)
+    
+    # Extract relevant information from rules
+    rule_data = []
+    for rule in rules:
+        rule_info = {
+            "rule_id": rule.id,
+            "name": rule.display_name,
+            "source": ', '.join([src.target_id for src in rule.source_groups]),
+            "destination": ', '.join([dest.target_id for dest in rule.destination_groups]),
+            "service": ', '.join([svc.target_id for svc in rule.services]),
+            "action": rule.action,
+            "direction": rule.direction,
+            "scope": ', '.join(rule.scope),
+            "applied_to": ', '.join([applied.target_id for applied in rule.applied_tos]),
+            "logged": rule.logged,
+            "disabled": rule.disabled
+        }
+        rule_data.append(rule_info)
+    
+    # Create DataFrame and write to Excel
+    df = pd.DataFrame(rule_data)
+    with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="DFW Rules", index=False)
+
+    print(f"DFW report generated: {output_file}")
+
+# Usage example
+# Replace 'nsx_manager_ip', 'username', 'password' with your NSX Manager details
+generate_dfw_report_from_nsx("nsx_manager_ip", "username", "password")
